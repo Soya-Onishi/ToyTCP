@@ -45,6 +45,8 @@ impl TCP {
         )?;
         socket.send_tcp_packet(TcpFlags::SYN, &[])?;
         let sock_id = socket.get_sock_id();
+
+        Ok(sock_id)
     }
 }
 
