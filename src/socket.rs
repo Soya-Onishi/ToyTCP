@@ -25,6 +25,8 @@ pub struct Socket {
     pub status: TcpStatus,
 
     pub sender: TransportSender,
+    pub connected_connection_queue: VecDeque<SockID>, // 接続済みソケットを保持するキュー、リスニングソケットのみ使用
+    pub listening_socket: Option<SockID>, // 生成元のリスニングソケット、接続済みソケットのみ使用
 }
 
 #[derive(Clone, Debug)]
@@ -84,6 +86,9 @@ impl Socket {
             tail: 0
         };
 
+        let connected_connection_queue = VecDeque::new();
+        let listening_socket = None;
+
         Ok(Self {
             local_addr,
             remote_addr,
@@ -95,6 +100,8 @@ impl Socket {
             status,
 
             sender,
+            connected_connection_queue,
+            listening_socket,
         })
     }
 
