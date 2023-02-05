@@ -6,7 +6,7 @@ use pnet::transport::{self, TransportChannelType, TransportProtocol, TransportSe
 use pnet::util;
 use std::collections::VecDeque;
 use std::fmt::{self, Display};
-use std::net::{IpAddr, Ipv4Addr, TcpListener};
+use std::net::{IpAddr, Ipv4Addr};
 use std::time::SystemTime;
 
 const SOCKET_BUFFER_SIZE: usize = 4380;
