@@ -27,6 +27,9 @@ pub struct Socket {
     pub sender: TransportSender,
     pub connected_connection_queue: VecDeque<SockID>, // 接続済みソケットを保持するキュー、リスニングソケットのみ使用
     pub listening_socket: Option<SockID>, // 生成元のリスニングソケット、接続済みソケットのみ使用
+
+    // 再送用データの保管キュー
+    pub retransmission_queue: VecDeque<RetransmissionQueueEntry>,
 }
 
 #[derive(Clone, Debug)]
@@ -43,6 +46,13 @@ pub struct RecvParam {
     pub window: u16,
     pub initial_seq: u32,
     pub tail: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct RetransmissionQueueEntry {
+    pub packet: TCPPacket,
+    pub latest_transmission_time: SystemTime,
+    pub transmission_count: u8,
 }
 
 #[derive(PartialEq, Eq, Debug, Clone)]
@@ -88,6 +98,7 @@ impl Socket {
 
         let connected_connection_queue = VecDeque::new();
         let listening_socket = None;
+        let retransmission_queue = VecDeque::new();
 
         Ok(Self {
             local_addr,
@@ -102,6 +113,7 @@ impl Socket {
             sender,
             connected_connection_queue,
             listening_socket,
+            retransmission_queue,
         })
     }
 
@@ -128,6 +140,10 @@ impl Socket {
 
         dbg!("sent", &tcp_packet);
 
+        if !payload.is_empty() || tcp_packet.get_flag() != tcpflags::ACK {
+            self.retransmission_queue.push_back(RetransmissionQueueEntry::new(tcp_packet));
+        }
+
         Ok(sent_size)
     }
 
@@ -138,6 +154,16 @@ impl Socket {
             self.local_port,
             self.remote_port,
         )
+    }
+}
+
+impl RetransmissionQueueEntry {
+    fn new(packet: TCPPacket) -> Self {
+        Self {
+            packet,
+            latest_transmission_time: SystemTime::now(),
+            transmission_count: 1,
+        }
     }
 }
 

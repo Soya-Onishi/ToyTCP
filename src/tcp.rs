@@ -14,8 +14,8 @@ use std::{cmp, ops::Range, str, thread};
 
 const UNDETERMINED_IP_ADDR: std::net::Ipv4Addr = Ipv4Addr::new(0, 0, 0, 0);
 const UNDETERMINED_PORT: u16 = 0;
-const MAX_TRANSMITTION: u8 = 5;
-const RETRANSMITTION_TIMEOUT: u64 = 3;
+const MAX_TRANSMISSION: u8 = 5;
+const RETRANSMISSION_TIMEOUT: u64 = 3;
 const MSS: usize = 1460;
 const PORT_RANGE: Range<u16> = 40000..60000;
 
@@ -51,6 +51,12 @@ impl TCP {
         // スリーウェイハンドシェイクのSYNACKの処理もここで行う
         std::thread::spawn(move || {
             cloned_tcp.receive_handler().unwrap();
+        });
+
+        let cloned_tcp = tcp.clone();
+        //再送管理用のタイマスレッド
+        std::thread::spawn(move || {
+            cloned_tcp.timer();
         });
 
         tcp
@@ -189,7 +195,7 @@ impl TCP {
                 TcpStatus::Listen =>  self.listen_handler(table, sock_id, &packet, remote_addr),
                 TcpStatus::SynRcvd => self.synrcvd_handler(table, sock_id, &packet),
                 TcpStatus::SynSent => self.synsent_handler(socket, &packet),
-                
+                TcpStatus::Established => self.established_handler(socket, &packet), 
                 _ => {
                     dbg!("not implemented state");
                     Ok(())
@@ -297,6 +303,84 @@ impl TCP {
         }
 
         Ok(())
+    }
+
+    fn established_handler(&self, socket: &mut Socket, packet: &TCPPacket) -> Result<()> {
+        dbg!("established handler");
+
+        if socket.send_param.unacked_seq < packet.get_ack() 
+        && packet.get_ack() <= socket.send_param.next {
+            socket.send_param.unacked_seq = packet.get_ack();
+            self.delete_acked_segment_from_retransmission_queue(socket);
+        } else if socket.send_param.next < packet.get_ack() {
+            // 未送信セグメントに対するACKは破棄
+            return Ok(());
+        }
+
+        if packet.get_flag() & tcpflags::ACK == 0 {
+            // ACKが立っていない受信パケットは破棄
+            return Ok(());
+        }
+
+        Ok(())
+    }
+
+    fn delete_acked_segment_from_retransmission_queue(&self, socket: &mut Socket) {
+        dbg!("ack accept", socket.send_param.unacked_seq);
+
+        while let Some(item) = socket.retransmission_queue.pop_front() {
+            if socket.send_param.unacked_seq > item.packet.get_seq() {
+                dbg!("successfully acked", item.packet.get_seq());
+                self.publish_event(socket.get_sock_id(), TCPEventKind::Acked);
+            } else {
+                socket.retransmission_queue.push_front(item);
+                break;
+            }
+        }
+    }
+
+    fn timer(&self) { 
+        dbg!("begin timer thread");
+
+        loop {
+            let mut table = self.sockets.write().unwrap();
+            for (_, socket) in table.iter_mut() {
+                while let Some(mut item) = socket.retransmission_queue.pop_front() {
+                    if socket.send_param.unacked_seq > item.packet.get_seq() {
+                        // ACKをすでに受信済み
+                        dbg!("successfully acked", item.packet.get_seq());
+                        continue;
+                    } 
+
+                    if item.latest_transmission_time.elapsed().unwrap() < Duration::from_secs(RETRANSMISSION_TIMEOUT) {
+                        socket.retransmission_queue.push_front(item);
+                        break;
+                    }
+
+                    if item.transmission_count < MAX_TRANSMISSION {
+                        dbg!("retransmit");
+                        socket.sender
+                            .send_to(item.packet.clone(), IpAddr::V4(socket.remote_addr))
+                            .context("failed to retransmit")
+                            .unwrap();
+                        item.transmission_count += 1;
+                        item.latest_transmission_time = SystemTime::now();
+                        // 上の処理のように送信時間を見てRTTを超えていなければ再送するかの確認処理を
+                        // 中断するという処理をできるようにするため
+                        // 再送キューの一番後ろに配置するようにする
+                        socket.retransmission_queue.push_back(item);
+                        break;
+                    } else {
+                        // 再送の上限回数に達したので再送を諦める
+                        // 本来はメインスレッドへエラーの通知が必要
+                        dbg!("reached MAX_TRANSMISSION");
+                    }
+                }
+            }
+
+            drop(table);
+            thread::sleep(Duration::from_millis(100));
+        }
     }
 
     // 指定したソケットIDに対して指定したイベントが来るまで待機
