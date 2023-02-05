@@ -30,6 +30,10 @@ pub struct Socket {
 
     // 再送用データの保管キュー
     pub retransmission_queue: VecDeque<RetransmissionQueueEntry>,
+
+    // 受信用のバッファ
+    // パケットの到着順は送信順とは限らないため、一旦バッファに格納してseq順に並び替える必要がある
+    pub recv_buffer: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]
@@ -99,6 +103,7 @@ impl Socket {
         let connected_connection_queue = VecDeque::new();
         let listening_socket = None;
         let retransmission_queue = VecDeque::new();
+        let recv_buffer = vec![0; SOCKET_BUFFER_SIZE];
 
         Ok(Self {
             local_addr,
@@ -114,6 +119,7 @@ impl Socket {
             connected_connection_queue,
             listening_socket,
             retransmission_queue,
+            recv_buffer,
         })
     }
 
