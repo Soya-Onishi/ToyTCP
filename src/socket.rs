@@ -81,9 +81,9 @@ impl Socket {
         status: TcpStatus,
     ) -> Result<Self> {
         // トランスポート層のTCPに投げるように設定？
-        let (sender, _) =  transport::transport_channel(
+        let (sender, _) = transport::transport_channel(
             65535,
-            TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp))
+            TransportChannelType::Layer4(TransportProtocol::Ipv4(IpNextHeaderProtocols::Tcp)),
         )?;
 
         let send_param = SendParam {
@@ -97,7 +97,7 @@ impl Socket {
             initial_seq: 0,
             next: 0,
             window: SOCKET_BUFFER_SIZE as u16,
-            tail: 0
+            tail: 0,
         };
 
         let connected_connection_queue = VecDeque::new();
@@ -128,7 +128,7 @@ impl Socket {
         seq: u32,
         ack: u32,
         flag: u8,
-        payload: &[u8]
+        payload: &[u8],
     ) -> Result<usize> {
         let mut tcp_packet = TCPPacket::new(payload.len());
         tcp_packet.set_src(self.local_port);
@@ -139,15 +139,26 @@ impl Socket {
         tcp_packet.set_flag(flag);
         tcp_packet.set_window_size(self.recv_param.window);
         tcp_packet.set_payload(payload);
-        tcp_packet.set_checksum(util::ipv4_checksum(&tcp_packet.packet(), 8, &[], &self.local_addr, &self.remote_addr, IpNextHeaderProtocols::Tcp));
+        tcp_packet.set_checksum(util::ipv4_checksum(
+            &tcp_packet.packet(),
+            8,
+            &[],
+            &self.local_addr,
+            &self.remote_addr,
+            IpNextHeaderProtocols::Tcp,
+        ));
 
         // tcp_packet.clone()のcloneは必要？
-        let sent_size = self.sender.send_to(tcp_packet.clone(), IpAddr::V4(self.remote_addr)).context(format!("failed to send: \n{:?}", tcp_packet))?;
+        let sent_size = self
+            .sender
+            .send_to(tcp_packet.clone(), IpAddr::V4(self.remote_addr))
+            .context(format!("failed to send: \n{:?}", tcp_packet))?;
 
         dbg!("sent", &tcp_packet);
 
         if !payload.is_empty() || tcp_packet.get_flag() != tcpflags::ACK {
-            self.retransmission_queue.push_back(RetransmissionQueueEntry::new(tcp_packet));
+            self.retransmission_queue
+                .push_back(RetransmissionQueueEntry::new(tcp_packet));
         }
 
         Ok(sent_size)
@@ -160,6 +171,16 @@ impl Socket {
             self.local_port,
             self.remote_port,
         )
+    }
+}
+
+impl SendParam {
+    pub fn used(&self) -> u32 {
+        self.next - self.unacked_seq
+    }
+
+    pub fn remain(&self) -> u32 {
+        u32::from(self.window).saturating_sub(self.used())
     }
 }
 
