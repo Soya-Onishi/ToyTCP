@@ -18,6 +18,7 @@ const MAX_TRANSMISSION: u8 = 5;
 const RETRANSMISSION_TIMEOUT: u64 = 3;
 const MSS: usize = 1460;
 const PORT_RANGE: Range<u16> = 40000..60000;
+const WINDOW_PROBE_DURATION: Duration = Duration::from_millis(5000);
 
 pub struct TCP {
     sockets: RwLock<HashMap<SockID, Socket>>,
@@ -143,7 +144,7 @@ impl TCP {
                 cmp::min(socket.send_param.remain() as usize, buffer.len() - cursor),
             );
 
-            if send_size == 0 {
+            if send_size == 0 || socket.last_time_window_probe.is_some() {
                 drop(table);
                 thread::sleep(Duration::from_millis(1));
                 continue;
@@ -458,7 +459,16 @@ impl TCP {
 
         if socket.send_param.window != packet.get_window_size() {
             dbg!("resize window size", packet.get_window_size());
+
+            if packet.get_window_size() == 0 && socket.last_time_window_probe.is_none() {
+                dbg!("transit into window probe mode");
+                socket.last_time_window_probe = Some(SystemTime::now());
+            } else if packet.get_window_size() > 0 && socket.last_time_window_probe.is_some() {
+                dbg!("transit into normal mode");
+                socket.last_time_window_probe = None;
+            }
         }
+
         socket.send_param.window = packet.get_window_size();
 
         if !packet.payload().is_empty() {
@@ -589,6 +599,21 @@ impl TCP {
         loop {
             let mut table = self.sockets.write().unwrap();
             for (sock_id, socket) in table.iter_mut() {
+                if let Some(last_time) = socket.last_time_window_probe {
+                    if last_time.elapsed().unwrap() > WINDOW_PROBE_DURATION {
+                        // KeepAliveパケットを送信する
+                        socket
+                            .send_tcp_packet(
+                                socket.send_param.next - 1,
+                                socket.recv_param.next,
+                                tcpflags::ACK,
+                                &[],
+                            )
+                            .expect("failed to send window probe");
+                        socket.last_time_window_probe = Some(SystemTime::now());
+                    }
+                }
+
                 while let Some(mut item) = socket.retransmission_queue.pop_front() {
                     if socket.send_param.unacked_seq > item.packet.get_seq() {
                         // ACKをすでに受信済み

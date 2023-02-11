@@ -34,6 +34,8 @@ pub struct Socket {
     // 受信用のバッファ
     // パケットの到着順は送信順とは限らないため、一旦バッファに格納してseq順に並び替える必要がある
     pub recv_buffer: Vec<u8>,
+
+    pub last_time_window_probe: Option<SystemTime>,
 }
 
 #[derive(Clone, Debug)]
@@ -104,6 +106,7 @@ impl Socket {
         let listening_socket = None;
         let retransmission_queue = VecDeque::new();
         let recv_buffer = vec![0; SOCKET_BUFFER_SIZE];
+        let window_probe_duration = None;
 
         Ok(Self {
             local_addr,
@@ -120,6 +123,8 @@ impl Socket {
             listening_socket,
             retransmission_queue,
             recv_buffer,
+
+            last_time_window_probe: window_probe_duration,
         })
     }
 
