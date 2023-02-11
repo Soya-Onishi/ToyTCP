@@ -15,7 +15,7 @@ use std::{cmp, ops::Range, str, thread};
 const UNDETERMINED_IP_ADDR: std::net::Ipv4Addr = Ipv4Addr::new(0, 0, 0, 0);
 const UNDETERMINED_PORT: u16 = 0;
 const MAX_TRANSMISSION: u8 = 5;
-const RETRANSMISSION_TIMEOUT: u64 = 3;
+const RETRANSMISSION_TIMEOUT: Duration = Duration::from_secs(3);
 const MSS: usize = 1460;
 const PORT_RANGE: Range<u16> = 40000..60000;
 const WINDOW_PROBE_DURATION: Duration = Duration::from_millis(5000);
@@ -629,9 +629,7 @@ impl TCP {
                         continue;
                     }
 
-                    if item.latest_transmission_time.elapsed().unwrap()
-                        < Duration::from_secs(RETRANSMISSION_TIMEOUT)
-                    {
+                    if item.latest_transmission_time.elapsed().unwrap() < RETRANSMISSION_TIMEOUT {
                         socket.retransmission_queue.push_front(item);
                         break;
                     }

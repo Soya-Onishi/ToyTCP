@@ -10,6 +10,9 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::time::SystemTime;
 
 const SOCKET_BUFFER_SIZE: usize = 4380;
+const MSS: u32 = 1460;
+const INIT_CONGESTION_WINDOW: u32 = 10 * MSS;
+const INIT_SST: u32 = 2 * 1024 * 1024;
 
 #[derive(Debug, Hash, Eq, PartialEq, Clone, Copy)]
 pub struct SockID(pub Ipv4Addr, pub Ipv4Addr, pub u16, pub u16);
@@ -36,6 +39,9 @@ pub struct Socket {
     pub recv_buffer: Vec<u8>,
 
     pub last_time_window_probe: Option<SystemTime>,
+
+    pub congestion_window: u32,
+    pub slow_start_threshold: u32,
 }
 
 #[derive(Clone, Debug)]
