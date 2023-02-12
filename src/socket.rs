@@ -7,9 +7,11 @@ use pnet::util;
 use std::collections::VecDeque;
 use std::fmt::{self, Display};
 use std::net::{IpAddr, Ipv4Addr};
+use std::time::Duration;
 use std::time::SystemTime;
 
 const SOCKET_BUFFER_SIZE: usize = 4380;
+const INIT_RTO: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Hash, Eq, PartialEq, Clone, Copy)]
 pub struct SockID(pub Ipv4Addr, pub Ipv4Addr, pub u16, pub u16);
@@ -36,6 +38,12 @@ pub struct Socket {
     pub recv_buffer: Vec<u8>,
 
     pub last_time_window_probe: Option<SystemTime>,
+
+    pub retransmission_timeout: Duration,
+
+    pub syn_sent_time: Option<SystemTime>,
+    pub sent_time_log: SentTimeQueue,
+    pub turn_around_times: VecDeque<Duration>,
 }
 
 #[derive(Clone, Debug)]
@@ -58,6 +66,7 @@ pub struct RecvParam {
 pub struct RetransmissionQueueEntry {
     pub packet: TCPPacket,
     pub latest_transmission_time: SystemTime,
+    pub expected_ack: u32,
     pub transmission_count: u8,
 }
 
@@ -72,6 +81,17 @@ pub enum TcpStatus {
     TimeWait,
     CloseWait,
     LastAck,
+}
+
+pub struct SentTimeQueue {
+    sent_times: VecDeque<SentTime>,
+    max_len: usize,
+}
+
+pub struct SentTime {
+    pub sent_time: SystemTime,
+    pub sent_seq: u32,
+    pub expected_ack: u32,
 }
 
 impl Socket {
@@ -107,6 +127,9 @@ impl Socket {
         let retransmission_queue = VecDeque::new();
         let recv_buffer = vec![0; SOCKET_BUFFER_SIZE];
         let window_probe_duration = None;
+        let retransmission_timeout = INIT_RTO;
+        let sent_time_log = SentTimeQueue::new(256);
+        let turn_around_times = VecDeque::new();
 
         Ok(Self {
             local_addr,
@@ -124,7 +147,11 @@ impl Socket {
             retransmission_queue,
             recv_buffer,
 
+            syn_sent_time: None,
             last_time_window_probe: window_probe_duration,
+            retransmission_timeout,
+            sent_time_log,
+            turn_around_times,
         })
     }
 
@@ -189,11 +216,50 @@ impl SendParam {
     }
 }
 
+impl SentTimeQueue {
+    pub fn new(max_len: usize) -> Self {
+        SentTimeQueue {
+            sent_times: VecDeque::new(),
+            max_len,
+        }
+    }
+
+    pub fn push(&mut self, seq: u32, expected_ack: u32) {
+        let sent_time = SentTime {
+            sent_time: SystemTime::now(),
+            sent_seq: seq,
+            expected_ack,
+        };
+
+        if self.sent_times.len() >= self.max_len {
+            self.sent_times.pop_front();
+        }
+
+        self.sent_times.push_back(sent_time);
+    }
+
+    pub fn pop(&mut self, ack: u32) -> Option<SentTime> {
+        if let Some((idx, _)) = self
+            .sent_times
+            .iter()
+            .enumerate()
+            .find(|(_, t)| t.expected_ack == ack)
+        {
+            self.sent_times.remove(idx)
+        } else {
+            None
+        }
+    }
+}
+
 impl RetransmissionQueueEntry {
     fn new(packet: TCPPacket) -> Self {
+        let expected_ack = packet.get_seq() + packet.payload().len() as u32;
+
         Self {
             packet,
             latest_transmission_time: SystemTime::now(),
+            expected_ack,
             transmission_count: 1,
         }
     }
