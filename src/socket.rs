@@ -41,9 +41,10 @@ pub struct Socket {
 
     pub retransmission_timeout: Duration,
 
-    pub syn_sent_time: Option<SystemTime>,
-    pub sent_time_log: SentTimeQueue,
-    pub turn_around_times: VecDeque<Duration>,
+    pub sent_times: VecDeque<SentTime>,
+
+    pub rto: Option<RTOBase>,
+    pub temp_rto: Option<Duration>,
 }
 
 #[derive(Clone, Debug)]
@@ -68,6 +69,7 @@ pub struct RetransmissionQueueEntry {
     pub latest_transmission_time: SystemTime,
     pub expected_ack: u32,
     pub transmission_count: u8,
+    pub rto: Duration,
 }
 
 #[derive(PartialEq, Eq, Debug, Clone)]
@@ -83,15 +85,14 @@ pub enum TcpStatus {
     LastAck,
 }
 
-pub struct SentTimeQueue {
-    sent_times: VecDeque<SentTime>,
-    max_len: usize,
-}
-
 pub struct SentTime {
     pub sent_time: SystemTime,
-    pub sent_seq: u32,
     pub expected_ack: u32,
+}
+
+pub struct RTOBase {
+    srtt: Duration,
+    rttvar: Duration,
 }
 
 impl Socket {
@@ -128,8 +129,7 @@ impl Socket {
         let recv_buffer = vec![0; SOCKET_BUFFER_SIZE];
         let window_probe_duration = None;
         let retransmission_timeout = INIT_RTO;
-        let sent_time_log = SentTimeQueue::new(256);
-        let turn_around_times = VecDeque::new();
+        let sent_times = VecDeque::new();
 
         Ok(Self {
             local_addr,
@@ -147,11 +147,13 @@ impl Socket {
             retransmission_queue,
             recv_buffer,
 
-            syn_sent_time: None,
             last_time_window_probe: window_probe_duration,
             retransmission_timeout,
-            sent_time_log,
-            turn_around_times,
+
+            sent_times,
+
+            rto: None,
+            temp_rto: None,
         })
     }
 
@@ -161,6 +163,7 @@ impl Socket {
         ack: u32,
         flag: u8,
         payload: &[u8],
+        rto: Duration,
     ) -> Result<usize> {
         let mut tcp_packet = TCPPacket::new(payload.len());
         tcp_packet.set_src(self.local_port);
@@ -190,7 +193,7 @@ impl Socket {
 
         if !payload.is_empty() || tcp_packet.get_flag() != tcpflags::ACK {
             self.retransmission_queue
-                .push_back(RetransmissionQueueEntry::new(tcp_packet));
+                .push_back(RetransmissionQueueEntry::new(tcp_packet, rto));
         }
 
         Ok(sent_size)
@@ -216,44 +219,41 @@ impl SendParam {
     }
 }
 
-impl SentTimeQueue {
-    pub fn new(max_len: usize) -> Self {
-        SentTimeQueue {
-            sent_times: VecDeque::new(),
-            max_len,
+impl RTOBase {
+    pub fn new(rtt: Duration) -> Self {
+        RTOBase {
+            srtt: rtt,
+            rttvar: rtt / 2,
         }
     }
 
-    pub fn push(&mut self, seq: u32, expected_ack: u32) {
-        let sent_time = SentTime {
-            sent_time: SystemTime::now(),
-            sent_seq: seq,
-            expected_ack,
+    pub fn get(&self) -> Duration {
+        let rto = self.srtt + self.rttvar;
+
+        if rto < Duration::from_secs(1) {
+            Duration::from_secs(1)
+        } else {
+            rto
+        }
+    }
+
+    pub fn next(&mut self, rtt: Duration) {
+        const RTO_ALPHA: f32 = 0.125;
+        const RTO_BETA: f32 = 0.25;
+
+        let rtt_diff = if self.srtt > rtt {
+            self.srtt - rtt
+        } else {
+            rtt - self.srtt
         };
 
-        if self.sent_times.len() >= self.max_len {
-            self.sent_times.pop_front();
-        }
-
-        self.sent_times.push_back(sent_time);
-    }
-
-    pub fn pop(&mut self, ack: u32) -> Option<SentTime> {
-        if let Some((idx, _)) = self
-            .sent_times
-            .iter()
-            .enumerate()
-            .find(|(_, t)| t.expected_ack == ack)
-        {
-            self.sent_times.remove(idx)
-        } else {
-            None
-        }
+        self.rttvar = self.rttvar.mul_f32(1.0 - RTO_BETA) + rtt_diff.mul_f32(RTO_BETA);
+        self.srtt = self.srtt.mul_f32(1.0 - RTO_ALPHA) + rtt.mul_f32(RTO_ALPHA);
     }
 }
 
 impl RetransmissionQueueEntry {
-    fn new(packet: TCPPacket) -> Self {
+    fn new(packet: TCPPacket, rto: Duration) -> Self {
         let expected_ack = packet.get_seq() + packet.payload().len() as u32;
 
         Self {
@@ -261,6 +261,7 @@ impl RetransmissionQueueEntry {
             latest_transmission_time: SystemTime::now(),
             expected_ack,
             transmission_count: 1,
+            rto,
         }
     }
 }
