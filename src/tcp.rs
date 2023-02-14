@@ -1,5 +1,5 @@
 use crate::packet::TCPPacket;
-use crate::socket::{RTOBase, RetransmissionQueueEntry, SentTime, SockID, Socket, TcpStatus};
+use crate::socket::{RetransmissionQueueEntry, SentTime, SockID, Socket, TcpStatus, RTO};
 use crate::tcpflags;
 use anyhow::{Context, Result};
 use pnet::packet::{ip::IpNextHeaderProtocols, tcp::TcpPacket, Packet};
@@ -87,13 +87,7 @@ impl TCP {
         )?;
 
         socket.send_param.initial_seq = rng.gen_range(1..1 << 31);
-        socket.send_tcp_packet(
-            socket.send_param.initial_seq,
-            0,
-            tcpflags::SYN,
-            &[],
-            Duration::from_secs(1),
-        )?;
+        socket.send_tcp_packet(socket.send_param.initial_seq, 0, tcpflags::SYN, &[])?;
         socket.send_param.unacked_seq = socket.send_param.initial_seq;
         socket.send_param.next = socket.send_param.initial_seq + 1;
 
@@ -518,7 +512,7 @@ impl TCP {
                     rto.next(rtt);
                 }
                 None => {
-                    let _ = socket.rto.insert(RTOBase::new(rtt));
+                    let _ = socket.rto.insert(RTO::new(rtt));
                 }
             }
 

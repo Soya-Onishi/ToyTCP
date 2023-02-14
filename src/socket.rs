@@ -43,8 +43,7 @@ pub struct Socket {
 
     pub sent_times: VecDeque<SentTime>,
 
-    pub rto: Option<RTOBase>,
-    pub temp_rto: Option<Duration>,
+    pub rto: RTO,
 }
 
 #[derive(Clone, Debug)]
@@ -90,9 +89,10 @@ pub struct SentTime {
     pub expected_ack: u32,
 }
 
-pub struct RTOBase {
-    srtt: Duration,
-    rttvar: Duration,
+pub struct RTO {
+    rto: Duration,
+    srtt: Option<Duration>,
+    rttvar: Option<Duration>,
 }
 
 impl Socket {
@@ -130,6 +130,7 @@ impl Socket {
         let window_probe_duration = None;
         let retransmission_timeout = INIT_RTO;
         let sent_times = VecDeque::new();
+        let rto = RTO::new();
 
         Ok(Self {
             local_addr,
@@ -151,9 +152,7 @@ impl Socket {
             retransmission_timeout,
 
             sent_times,
-
-            rto: None,
-            temp_rto: None,
+            rto,
         })
     }
 
@@ -163,7 +162,6 @@ impl Socket {
         ack: u32,
         flag: u8,
         payload: &[u8],
-        rto: Duration,
     ) -> Result<usize> {
         let mut tcp_packet = TCPPacket::new(payload.len());
         tcp_packet.set_src(self.local_port);
@@ -193,7 +191,7 @@ impl Socket {
 
         if !payload.is_empty() || tcp_packet.get_flag() != tcpflags::ACK {
             self.retransmission_queue
-                .push_back(RetransmissionQueueEntry::new(tcp_packet, rto));
+                .push_back(RetransmissionQueueEntry::new(tcp_packet, self.rto.get()));
         }
 
         Ok(sent_size)
@@ -219,36 +217,46 @@ impl SendParam {
     }
 }
 
-impl RTOBase {
-    pub fn new(rtt: Duration) -> Self {
-        RTOBase {
-            srtt: rtt,
-            rttvar: rtt / 2,
+impl RTO {
+    pub fn new() -> Self {
+        RTO {
+            rto: Duration::from_secs(1),
+            srtt: None,
+            rttvar: None,
         }
     }
 
     pub fn get(&self) -> Duration {
-        let rto = self.srtt + self.rttvar;
+        self.rto
+    }
 
-        if rto < Duration::from_secs(1) {
-            Duration::from_secs(1)
-        } else {
-            rto
-        }
+    pub fn backoff(&mut self) -> Duration {
+        self.rto *= 2;
+        self.rto
     }
 
     pub fn next(&mut self, rtt: Duration) {
         const RTO_ALPHA: f32 = 0.125;
         const RTO_BETA: f32 = 0.25;
 
-        let rtt_diff = if self.srtt > rtt {
-            self.srtt - rtt
+        if self.srtt.is_none() {
+            self.srtt = Some(rtt);
+            self.rttvar = Some(rtt / 2);
         } else {
-            rtt - self.srtt
-        };
+            let srtt = self.srtt.unwrap();
+            let rttvar = self.rttvar.unwrap();
 
-        self.rttvar = self.rttvar.mul_f32(1.0 - RTO_BETA) + rtt_diff.mul_f32(RTO_BETA);
-        self.srtt = self.srtt.mul_f32(1.0 - RTO_ALPHA) + rtt.mul_f32(RTO_ALPHA);
+            let abs_sub = if rtt > srtt { rtt - srtt } else { srtt - rtt };
+
+            let rttvar = rttvar.mul_f32(1.0 - RTO_BETA) + abs_sub.mul_f32(RTO_BETA);
+            let srtt = srtt.mul_f32(1.0 - RTO_ALPHA) + rtt.mul_f32(RTO_ALPHA);
+            self.rttvar = Some(rttvar);
+            self.srtt = Some(srtt);
+        }
+
+        let srtt = self.srtt.unwrap();
+        let rttvar = self.rttvar.unwrap();
+        self.rto = srtt + 4 * rttvar;
     }
 }
 
