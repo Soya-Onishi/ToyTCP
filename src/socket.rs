@@ -230,8 +230,15 @@ impl RTO {
         self.rto
     }
 
+    pub fn set(&mut self, rto: Duration) {
+        self.rto = Duration::min(
+            Duration::max(Duration::from_secs(1), rto),
+            Duration::from_secs(60),
+        );
+    }
+
     pub fn backoff(&mut self) -> Duration {
-        self.rto *= 2;
+        self.set(self.rto * 2);
         self.rto
     }
 
@@ -256,7 +263,7 @@ impl RTO {
 
         let srtt = self.srtt.unwrap();
         let rttvar = self.rttvar.unwrap();
-        self.rto = srtt + 4 * rttvar;
+        self.set(srtt + 4 * rttvar)
     }
 }
 
