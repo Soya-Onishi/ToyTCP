@@ -671,7 +671,12 @@ impl TCP {
                             .context("failed to retransmit")
                             .unwrap();
                         item.transmission_count += 1;
-                        item.rto = socket.rto.backoff();
+                        if item.packet.get_flag() == tcpflags::SYN {
+                            socket.rto.set(Duration::from_secs(3));
+                            item.rto = socket.rto.get();
+                        } else {
+                            item.rto = socket.rto.backoff();
+                        }
                         item.latest_transmission_time = SystemTime::now();
                         // 上の処理のように送信時間を見てRTTを超えていなければ再送するかの確認処理を
                         // 中断するという処理をできるようにするため
