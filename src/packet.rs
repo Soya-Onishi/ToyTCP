@@ -7,8 +7,8 @@ use std::net::Ipv4Addr;
 const TCP_HEADER_SIZE: usize = 20;
 
 #[derive(Clone)]
-pub struct TCPPacket { 
-    buffer: Vec<u8>
+pub struct TCPPacket {
+    buffer: Vec<u8>,
 }
 
 impl TCPPacket {
@@ -26,7 +26,7 @@ impl TCPPacket {
         self.buffer[2..4].copy_from_slice(&port.to_be_bytes());
     }
 
-    pub fn set_seq(&mut self, seq_num: u32) { 
+    pub fn set_seq(&mut self, seq_num: u32) {
         self.buffer[4..8].copy_from_slice(&seq_num.to_be_bytes());
     }
 
@@ -63,11 +63,21 @@ impl TCPPacket {
     }
 
     pub fn get_seq(&self) -> u32 {
-        u32::from_be_bytes([self.buffer[4], self.buffer[5], self.buffer[6], self.buffer[7]])
+        u32::from_be_bytes([
+            self.buffer[4],
+            self.buffer[5],
+            self.buffer[6],
+            self.buffer[7],
+        ])
     }
 
     pub fn get_ack(&self) -> u32 {
-        u32::from_be_bytes([self.buffer[8], self.buffer[9], self.buffer[10], self.buffer[11]])
+        u32::from_be_bytes([
+            self.buffer[8],
+            self.buffer[9],
+            self.buffer[10],
+            self.buffer[11],
+        ])
     }
 
     pub fn get_flag(&self) -> u8 {
@@ -83,7 +93,21 @@ impl TCPPacket {
     }
 
     pub fn is_correct_checksum(&self, local_addr: Ipv4Addr, remote_addr: Ipv4Addr) -> bool {
-        self.get_checksum() == util::ipv4_checksum(&self.packet(), 8, &[], &local_addr, &remote_addr, IpNextHeaderProtocols::Tcp)
+        self.get_checksum()
+            == util::ipv4_checksum(
+                &self.packet(),
+                8,
+                &[],
+                &local_addr,
+                &remote_addr,
+                IpNextHeaderProtocols::Tcp,
+            )
+    }
+
+    pub fn get_data_offset(&self) -> u32 {
+        let offset = self.buffer[12] >> 4;
+        let offset = (offset & 0x0F) * 4;
+        offset as u32
     }
 }
 
@@ -93,7 +117,8 @@ impl Packet for TCPPacket {
     }
 
     fn payload(&self) -> &[u8] {
-        &self.buffer[TCP_HEADER_SIZE..]
+        let offset = self.get_data_offset() as usize;
+        &self.buffer[offset..]
     }
 }
 

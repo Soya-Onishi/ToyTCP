@@ -568,6 +568,12 @@ impl TCP {
     }
 
     fn process_payload(&self, socket: &mut Socket, packet: &TCPPacket) -> Result<()> {
+        if packet.get_flag() & tcpflags::SYN > 0 && packet.get_flag() & tcpflags::ACK > 0 {
+            dbg!(packet.get_data_offset());
+            dbg!(packet.payload().len());
+            dbg!(packet.get_seq());
+            dbg!(socket.recv_param.next);
+        }
         // 順序が入れ替わっていたときのためにpacket.get_seq() - socket.recv_param.nextでoffsetを調整する
         let offset = socket.recv_buffer.len() - socket.recv_param.window as usize
             + (packet.get_seq() - socket.recv_param.next) as usize;
