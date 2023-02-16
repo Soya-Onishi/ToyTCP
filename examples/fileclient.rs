@@ -25,7 +25,6 @@ fn file_client(addr: Ipv4Addr, port: u16, filepath: &str) -> Result<()> {
     let input = fs::read(filepath)?;
     for chunk in input.chunks(1024) {
         tcp.send(sock_id, chunk)?;
-        std::thread::sleep(std::time::Duration::from_millis(500));
     }
     tcp.close(sock_id)?;
 

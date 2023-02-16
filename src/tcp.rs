@@ -158,6 +158,8 @@ impl TCP {
                 expected_ack: socket.send_param.next + send_size as u32,
             });
 
+            dbg!(socket.send_param.next - socket.send_param.initial_seq);
+
             // RFC793によるとデータを送るときはACKが必要っぽい
             socket.send_tcp_packet(
                 socket.send_param.next,
@@ -168,7 +170,6 @@ impl TCP {
 
             cursor += send_size;
             socket.send_param.next += send_size as u32;
-            dbg!("socket send param incremented");
             dbg!(socket.send_param.next - socket.send_param.initial_seq);
 
             // 1msだけtableのロックを解除して受信スレッドが扱えるようにする。
