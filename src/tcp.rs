@@ -158,23 +158,12 @@ impl TCP {
                 expected_ack: socket.send_param.next + send_size as u32,
             });
 
-            let rto = socket.temp_rto.take().unwrap_or(
-                socket
-                    .rto
-                    .as_ref()
-                    .map(|r| r.get())
-                    .unwrap_or(Duration::from_secs(1)),
-            );
-            dbg!("send packet");
-            dbg!(rto);
-
             // RFC793によるとデータを送るときはACKが必要っぽい
             socket.send_tcp_packet(
                 socket.send_param.next,
                 socket.recv_param.next,
                 tcpflags::ACK,
                 &buffer[cursor..cursor + send_size],
-                rto,
             )?;
 
             cursor += send_size;
@@ -234,7 +223,6 @@ impl TCP {
             socket.recv_param.next,
             tcpflags::FIN | tcpflags::ACK,
             &[],
-            Duration::from_secs(1),
         )?;
 
         socket.send_param.next += 1;
@@ -372,7 +360,6 @@ impl TCP {
                 connection_socket.recv_param.next,
                 tcpflags::SYN | tcpflags::ACK,
                 &[],
-                Duration::from_secs(1),
             )?;
 
             connection_socket.send_param.next = connection_socket.send_param.initial_seq + 1;
@@ -436,7 +423,6 @@ impl TCP {
                     socket.recv_param.next,
                     tcpflags::ACK,
                     &[],
-                    Duration::from_secs(1),
                 )?;
                 dbg!("status: syssent ->", &socket.status);
                 self.publish_event(socket.get_sock_id(), TCPEventKind::ConnectionCompleted);
@@ -447,7 +433,6 @@ impl TCP {
                     socket.recv_param.next,
                     tcpflags::ACK,
                     &[],
-                    Duration::from_secs(1),
                 )?;
 
                 dbg!("status: synsent ->", &socket.status);
@@ -506,18 +491,10 @@ impl TCP {
         {
             let sent_time = socket.sent_times.remove(idx).unwrap();
             let rtt = sent_time.sent_time.elapsed().unwrap();
-
-            match socket.rto {
-                Some(ref mut rto) => {
-                    rto.next(rtt);
-                }
-                None => {
-                    let _ = socket.rto.insert(RTO::new(rtt));
-                }
-            }
+            socket.rto.next(rtt);
 
             dbg!(sent_time.sent_time.elapsed().unwrap());
-            dbg!(socket.rto.as_ref().unwrap().get());
+            dbg!(socket.rto.get());
         }
 
         if !packet.payload().is_empty() {
@@ -526,18 +503,11 @@ impl TCP {
 
         if packet.get_flag() & tcpflags::FIN > 0 {
             socket.recv_param.next = packet.get_seq() + 1;
-            let rto = socket
-                .rto
-                .as_ref()
-                .map(|r| r.get())
-                .unwrap_or(Duration::from_secs(1));
-
             socket.send_tcp_packet(
                 socket.send_param.next,
                 socket.recv_param.next,
                 tcpflags::ACK,
                 &[],
-                rto,
             )?;
             socket.status = TcpStatus::CloseWait;
             self.publish_event(socket.get_sock_id(), TCPEventKind::DataArrived);
@@ -578,18 +548,11 @@ impl TCP {
         // FinWait2のときにのみFINが来ることとしている
         if packet.get_flag() & tcpflags::FIN > 0 {
             socket.recv_param.next += 1;
-            let rto = socket
-                .rto
-                .as_ref()
-                .map(|r| r.get())
-                .unwrap_or(Duration::from_secs(1));
-
             socket.send_tcp_packet(
                 socket.send_param.next,
                 socket.recv_param.next,
                 tcpflags::ACK,
                 &[],
-                rto,
             )?;
             self.publish_event(socket.get_sock_id(), TCPEventKind::ConnectionClosed);
         }
@@ -631,7 +594,6 @@ impl TCP {
                 socket.recv_param.next,
                 tcpflags::ACK,
                 &[],
-                Duration::from_secs(1),
             )?;
         } else {
             dbg!("recv buffer overflow");
@@ -672,13 +634,13 @@ impl TCP {
                                 socket.recv_param.next,
                                 tcpflags::ACK,
                                 &[],
-                                Duration::from_secs(3),
                             )
                             .expect("failed to send window probe");
                         socket.last_time_window_probe = Some(SystemTime::now());
                     }
                 }
 
+                let mut new_retransmission_queue = VecDeque::new();
                 while let Some(mut item) = socket.retransmission_queue.pop_front() {
                     if socket.send_param.unacked_seq > item.packet.get_seq() {
                         // ACKをすでに受信済み
@@ -695,19 +657,12 @@ impl TCP {
                     }
 
                     if item.latest_transmission_time.elapsed().unwrap() < item.rto {
-                        let sent_seq = item.packet.get_seq();
-                        let expected_ack =
-                            item.packet.get_seq() + item.packet.payload().len() as u32;
-
-                        socket.retransmission_queue.push_front(item);
+                        new_retransmission_queue.push_back(item);
                         continue;
                     }
 
                     if item.transmission_count < MAX_TRANSMISSION {
                         dbg!("retransmit");
-                        if socket.rto.is_some() {
-                            dbg!(socket.rto.as_ref().unwrap().get());
-                        }
 
                         socket
                             .sender
@@ -715,14 +670,12 @@ impl TCP {
                             .context("failed to retransmit")
                             .unwrap();
                         item.transmission_count += 1;
-                        item.rto *= 2;
-                        socket.temp_rto = Some(item.rto);
+                        item.rto = socket.rto.backoff();
                         item.latest_transmission_time = SystemTime::now();
                         // 上の処理のように送信時間を見てRTTを超えていなければ再送するかの確認処理を
                         // 中断するという処理をできるようにするため
                         // 再送キューの一番後ろに配置するようにする
-                        socket.retransmission_queue.push_back(item);
-                        break;
+                        new_retransmission_queue.push_back(item);
                     } else {
                         // 再送の上限回数に達したので再送を諦める
                         // 本来はメインスレッドへエラーの通知が必要
@@ -737,6 +690,8 @@ impl TCP {
                         }
                     }
                 }
+
+                socket.retransmission_queue = new_retransmission_queue;
             }
 
             drop(table);
